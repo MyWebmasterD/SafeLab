@@ -5,29 +5,39 @@ jQuery(document).ready(function($) {
     const changesTable = $('#changes-table tbody');
     const statusMessage = $('#scan-status'); // Elemento per i messaggi di stato
 
-    // Avvia la scansione
     startScanButton.on('click', function() {
         $.ajax({
             url: ajaxurl,
             method: 'POST',
             data: {
-                action: 'get_scan_interval' // Aggiungi un'azione per recuperare l'intervallo
+                action: 'safelab_scan_ftp'
             },
+            timeout: 300000, // Imposta il timeout a 5 minuti (300.000 millisecondi)
             success: function(response) {
+                console.log(response); // Debug: Log del risultato della richiesta AJAX
                 if (response.success) {
-                    const intervalMinutes = parseInt(response.data) || 5; // Usa l'intervallo salvato
-                    startScan(intervalMinutes * 60000); // Avvia la scansione
+                    displayChanges(response.data);
+                    statusMessage.text("Scansione completata.");
                 } else {
-                    alert('Errore nel recupero dell\'intervallo di scansione');
+                    logError(response.data || "Errore sconosciuto");
+                    clearInterval(scanInterval);
+                    statusMessage.text("Errore durante la scansione.");
+                    statusMessage.css('color', 'red');
                 }
             },
-            error: function() {
-                alert('Errore durante il recupero dell\'intervallo');
+            error: function(xhr, status, error) {
+                // Dettagli per errori AJAX, utile per debug
+                console.error("Errore xhr:", xhr);
+                console.error("Errore status:", status);
+                console.error("Errore error:", error);
+                logError("Errore AJAX: " + (error || "Errore sconosciuto"));
+                clearInterval(scanInterval);
+                statusMessage.text("Errore sconosciuto.");
+                statusMessage.css('color', 'red');
             }
         });
     });
 
-    // Ferma la scansione
     stopScanButton.on('click', function() {
         clearInterval(scanInterval);
         stopScanButton.prop('disabled', true);
@@ -36,46 +46,6 @@ jQuery(document).ready(function($) {
         statusMessage.css('color', 'red');
     });
 
-    // Funzione per avviare la scansione a intervalli regolari
-    function startScan(interval) {
-        statusMessage.text("Scansione in corso...");
-        statusMessage.css('color', 'green');
-        
-        scanInterval = setInterval(function() {
-            $.ajax({
-                url: ajaxurl,
-                method: 'POST',
-                data: {
-                    action: 'safelab_scan_ftp'
-                },
-                success: function(response) {
-                    console.log(response); // Debug: Log del risultato della richiesta AJAX
-                    if (response.success) {
-                        displayChanges(response.data);
-                        statusMessage.text("Scansione completata.");
-                    } else {
-                        logError(response.data || "Errore sconosciuto");
-                        clearInterval(scanInterval);
-                        statusMessage.text("Errore durante la scansione.");
-                        statusMessage.css('color', 'red');
-                    }
-                },
-                error: function(xhr, status, error) {
-                    // Dettagli per errori AJAX, utile per debug
-                    console.error("Errore AJAX:", error, xhr);
-                    logError("Errore AJAX: " + (error || "Errore sconosciuto"));
-                    clearInterval(scanInterval);
-                    statusMessage.text("Errore sconosciuto.");
-                    statusMessage.css('color', 'red');
-                }
-            });
-        }, interval);
-
-        stopScanButton.prop('disabled', false);
-        startScanButton.prop('disabled', true);
-    }
-
-    // Funzione per visualizzare i cambiamenti nella tabella
     function displayChanges(fileList) {
         changesTable.empty(); // Svuota la tabella prima di aggiornarla
         if (fileList.length > 0) {
@@ -88,7 +58,6 @@ jQuery(document).ready(function($) {
         }
     }
 
-    // Funzione per loggare gli errori e mostrarli all'utente
     function logError(message) {
         alert("Errore: " + message);
     }

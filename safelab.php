@@ -11,13 +11,14 @@ if ( !defined( 'ABSPATH' ) ) {
     exit;
 }
 
+/* Enqueue Script */
 function safelab_enqueue_scripts($hook) {
     if ($hook !== 'safelab_page_safelab_ftp') return;
     wp_enqueue_script('safelab-watcher', plugin_dir_url(__FILE__) . 'safelab-watcher.js', ['jquery'], null, true);
 }
 add_action('admin_enqueue_scripts', 'safelab_enqueue_scripts');
 
-// Aggiunge le voci di menu
+/* Aggiunge le voci di menu WP */
 function safelab_add_admin_menu() {
     add_menu_page(
         'SafeLab',
@@ -49,12 +50,14 @@ function safelab_add_admin_menu() {
 }
 add_action( 'admin_menu', 'safelab_add_admin_menu' );
 
-// Funzione per la pagina principale
+/* Pagina Principale */
 function safelab_main_page() {
     echo '<div class="wrap"><h1>SafeLab Monitor</h1><p>Benvenuto nel pannello di controllo di SafeLab. Usa il menu per navigare.</p></div>';
 }
 
-// Funzione per la pagina FTP Watcher
+/*  Pagina FTP Watcher
+    HTML con pulsanti di chiamata routine
+ */
 function safelab_ftp_page() {
     ?>
     <div class="wrap">
@@ -79,19 +82,10 @@ function safelab_ftp_page() {
     <?php
 }
 
-// Definisci il percorso del file di log
-define('SAFELAB_LOG_FILE', plugin_dir_path(__FILE__) . 'safelab_log.txt');
-
-// Crea il file di log se non esiste
-function safelab_create_log_file() {
-    if (!file_exists(SAFELAB_LOG_FILE)) {
-        file_put_contents(SAFELAB_LOG_FILE, "Log di SafeLab Monitor\n");
-    }
-}
-register_activation_hook(__FILE__, 'safelab_create_log_file');
-
-// Funzione per la pagina Settings
-// Funzione per la pagina delle impostazioni
+/*  Pagina di Settings 
+    Definisce connessione e test ftp, intervallo di scansione
+    Visualizzazione File di Log
+*/
 function safelab_settings_page() {
     // Salva le impostazioni se il form è stato inviato
     if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['safelab_save_settings'])) {
@@ -156,6 +150,19 @@ function safelab_settings_page() {
     echo '</div>';
 }
 
+
+// Definisci il percorso del file di log
+define('SAFELAB_LOG_FILE', plugin_dir_path(__FILE__) . 'safelab_log.txt');
+
+// Crea il file di log se non esiste
+function safelab_create_log_file() {
+    if (!file_exists(SAFELAB_LOG_FILE)) {
+        file_put_contents(SAFELAB_LOG_FILE, "Log di SafeLab Monitor\n");
+    }
+}
+register_activation_hook(__FILE__, 'safelab_create_log_file');
+
+
 // Aggiungi una funzione per restituire l'intervallo di scansione
 function safelab_get_scan_interval() {
     $scan_interval = get_option('safelab_scan_interval', 5); // Ottieni il valore salvato
@@ -163,5 +170,182 @@ function safelab_get_scan_interval() {
 }
 add_action('wp_ajax_get_scan_interval', 'safelab_get_scan_interval');
 
+
+function safelab_scan_ftp() {
+
+    $log_file = SAFELAB_LOG_FILE;
+
+    // Crea il file di log se non esiste
+    if (!file_exists($log_file)) {
+        file_put_contents($log_file, "Log creato\n"); // Questo creerà il file di log vuoto
+    }
+
+    // Connessione FTP
+    $ftp_host = get_option('safelab_ftp_host');
+    $ftp_user = get_option('safelab_ftp_user');
+    $ftp_pass = get_option('safelab_ftp_pass');
+    $ftp_port = get_option('safelab_ftp_port', 21);
+
+    
+    $conn_id = ftp_connect($ftp_host, $ftp_port);
+    if (!$conn_id) {
+        file_put_contents($log_file, "Errore: impossibile connettersi a $ftp_host\n", FILE_APPEND);
+        wp_send_json_error('Errore di connessione FTP');
+        return;
+    }
+
+        // Modalità passiva (il server lascia che il client stabilisca la connessione e si limita a confermarla)
+        ftp_pasv($conn_id, true);
+
+    if (!ftp_login($conn_id, $ftp_user, $ftp_pass)) {
+        file_put_contents($log_file, "Errore: login FTP fallito\n", FILE_APPEND);
+        ftp_close($conn_id);
+        wp_send_json_error('Errore di login FTP');
+        return;
+    }
+
+    $directory='/';
+    $result = [];
+    $stack = [];
+    $stack = [$directory]; // Inizializziamo con la directory di partenza
+
+    while (!empty($stack)) {
+        $current_dir = array_pop($stack);
+
+        // Ottieni l'elenco di file e directory nella directory corrente
+        $files = ftp_nlist($conn_id, $current_dir);
+        if ($files === false) {
+            continue; // Se non riesce a elencare la directory, passa alla successiva
+        }
+
+        foreach ($files as $filepath) {
+            // Salta le directory corrente e padre se presenti
+            $name = basename($filepath);
+            if ($name === '.' || $name === '..' || strpos($name, '.') === 0) {
+                continue;
+            }
+
+            $result[] = $filepath;
+            // Controlla se è una directory usando ftp_size (ritorna -1 se è una directory)
+             if (ftp_size($conn_id, $filepath) == -1) {
+            //     // È una directory, quindi aggiungila allo stack per scansioni future
+                   $stack[] = $filepath;
+            // } else {
+            //     // È un file, quindi aggiungilo al risultato
+            //     $result[] = $filepath;
+             }
+        }
+    }
+
+    ftp_close($conn_id);
+    wp_send_json_success($result);
+}
+add_action('wp_ajax_safelab_scan_ftp', 'safelab_scan_ftp');
+
+// Funzione ricorsiva per ottenere la lista dei file
+function safelab_list_files($ftp_conn, $dir, $log_file) {
+    
+    $files = [];
+    $contents = ftp_nlist($ftp_conn, $dir);
+
+    $filteredContents = array_filter($contents, function($item) {
+        return !preg_match('/\/\.\.?$/', $item);
+    });
+    return $filteredContents;
+}
+
+function ftp_mlsd_non_recursive($ftp_stream, $directory)
+{
+    $result = [];
+    $stack = [$directory]; // Inizializziamo lo stack con la directory di partenza
+
+    while (!empty($stack)) {
+        $current_dir = array_pop($stack);
+
+        $files = ftp_mlsd($ftp_stream, $current_dir);
+        if ($files === false) {
+            die("Cannot list $current_dir");
+        }
+
+        foreach ($files as $file) {
+            $name = $file["name"];
+            $filepath = $current_dir . "/" . $name;
+
+            if ($file["type"] == "cdir" || $file["type"] == "pdir") {
+                // Ignora la directory corrente e la directory padre
+                continue;
+            }
+
+            if ($file["type"] == "dir") {
+                // Se è una directory, aggiungila allo stack per la scansione successiva
+                $stack[] = $filepath;
+            } else {
+                // Se è un file, aggiungilo al risultato
+                $result[] = $filepath;
+            }
+        }
+    }
+
+    return $result;
+}
+
+function ftp_nlist_non_recursive($ftp_stream, $directory)
+{
+    $result = [];
+    $stack = [$directory];
+
+    while (!empty($stack)) {
+        $current_dir = array_pop($stack);
+
+        $files = ftp_nlist($ftp_stream, $current_dir);
+        if ($files === false) {
+            continue; // Salta se non riesce a elencare i file
+        }
+
+        foreach ($files as $filepath) {
+            // Verifica se è una directory
+            if (ftp_size($ftp_stream, $filepath) == -1) {
+                // È una directory, quindi aggiungila allo stack
+                $stack[] = $filepath;
+            } else {
+                // È un file, aggiungilo al risultato
+                $result[] = $filepath;
+            }
+        }
+    }
+
+    return $result;
+}
+
+function ftp_mlsd_recursive($ftp_stream, $directory)
+{
+    $result = [];
+
+    $files = ftp_mlsd($ftp_stream, $directory);
+    if ($files === false)
+    {
+        die("Cannot list $directory");
+    }
+
+    foreach ($files as $file)
+    { 
+        $name = $file["name"];
+        $filepath = $directory . "/" . $name;
+        if (($file["type"] == "cdir") || ($file["type"] == "pdir"))
+        {
+            // noop
+        }
+        else if ($file["type"] == "dir")
+        {
+            $temp = ftp_mlsd_recursive($ftp_stream, $filepath);
+            $result = array_merge($result, $temp);
+        }
+        else
+        {
+            $result[] = $filepath;
+        }
+    } 
+    return $result;
+} 
 
 ?>

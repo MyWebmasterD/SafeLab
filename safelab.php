@@ -13,7 +13,7 @@ if ( !defined( 'ABSPATH' ) ) {
 
 /* Enqueue Script */
 function safelab_enqueue_scripts($hook) {
-    if ($hook !== 'safelab_page_safelab_ftp') return;
+    if ($hook !== 'safelab_page_safelab_ftp' && $hook !== 'safelab_page_safelab_settings') return;
     wp_enqueue_script('safelab-watcher', plugin_dir_url(__FILE__) . 'safelab-watcher.js', ['jquery'], null, true);
 }
 add_action('admin_enqueue_scripts', 'safelab_enqueue_scripts');
@@ -148,6 +148,12 @@ function safelab_settings_page() {
     echo '<h2>File di Log</h2>';
     echo '<textarea readonly rows="10" class="large-text">' . esc_textarea($log_content) . '</textarea>';
     echo '</div>';
+
+    // Pulsante per cancellare il file di log 
+    echo '<h2>Gestione del Log</h2>';
+    echo '<button id="safelab-clear-log" class="button button-secondary">Cancella Log</button>';
+    echo '<div id="safelab-clear-log-status"></div>';
+
 }
 
 
@@ -161,6 +167,21 @@ function safelab_create_log_file() {
     }
 }
 register_activation_hook(__FILE__, 'safelab_create_log_file');
+
+// Funzione per cancellare il file di log
+function safelab_clear_log() {
+    $log_file = SAFELAB_LOG_FILE;
+
+    if (file_exists($log_file)) {
+        file_put_contents($log_file, "");  // Cancella il contenuto del file di log
+        wp_send_json_success("Log cancellato con successo.");
+    } else {
+        wp_send_json_error("Il file di log non esiste.");
+    }
+}
+
+// Aggiungi l'azione Ajax per gli utenti autenticati
+add_action('wp_ajax_safelab_clear_log', 'safelab_clear_log');
 
 
 // Aggiungi una funzione per restituire l'intervallo di scansione
@@ -204,40 +225,45 @@ function safelab_scan_ftp() {
         return;
     }
 
-    $directory='/';
+
+    $directory='/wp-content/themes/generatepress-child/js';
     $result = [];
     $stack = [];
     $stack = [$directory]; // Inizializziamo con la directory di partenza
 
+    file_put_contents($log_file, "Inizio della scansione su " . $directory . "...\n", FILE_APPEND);
+
     while (!empty($stack)) {
         $current_dir = array_pop($stack);
-
-        // Ottieni l'elenco di file e directory nella directory corrente
-        $files = ftp_nlist($conn_id, $current_dir);
+    
+        // Usa ftp_rawlist invece di ftp_nlist
+        $files = ftp_rawlist($conn_id, $current_dir);
         if ($files === false) {
             continue; // Se non riesce a elencare la directory, passa alla successiva
         }
-
-        foreach ($files as $filepath) {
-            // Salta le directory corrente e padre se presenti
-            $name = basename($filepath);
-            if ($name === '.' || $name === '..' || strpos($name, '.') === 0) {
-                continue;
+    
+        foreach ($files as $fileinfo) {
+            // Analizza i dettagli del file
+            $info = preg_split("/\s+/", $fileinfo);
+            $file_type = $info[0][0]; // Prendi il primo carattere (- per file, d per directory)
+            $file_name = end($info); // Nome del file o directory
+    
+            $filepath = $current_dir . '/' . $file_name;
+    
+            if ($file_name === '.' || $file_name === '..') {
+                continue; // Ignora corrente e padre
             }
-
-            $result[] = $filepath;
-            // Controlla se è una directory usando ftp_size (ritorna -1 se è una directory)
-             if (ftp_size($conn_id, $filepath) == -1) {
-            //     // È una directory, quindi aggiungila allo stack per scansioni future
-                   $stack[] = $filepath;
-            // } else {
-            //     // È un file, quindi aggiungilo al risultato
-            //     $result[] = $filepath;
-             }
+    
+            if ($file_type === 'd') { // Directory
+                $stack[] = $filepath;
+            } else { // File
+                $result[] = $filepath;
+            }
         }
     }
 
     ftp_close($conn_id);
+    file_put_contents($log_file, "Scansione completata\n", FILE_APPEND);
     wp_send_json_success($result);
 }
 add_action('wp_ajax_safelab_scan_ftp', 'safelab_scan_ftp');

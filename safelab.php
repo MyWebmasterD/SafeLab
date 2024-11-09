@@ -260,14 +260,22 @@ function safelab_scan_ftp()
 add_action('wp_ajax_safelab_scan_ftp', 'safelab_scan_ftp');
 
 
-// funzione ricorsiva di test
+// funzione ricorsiva per ottenere la lista delle directory
 function scan_directory_ftp($ftp_conn, $directory, $log_file) {
     $result = [];
     
     file_put_contents($log_file, "Esplorando la directory: $directory\n", FILE_APPEND);
+
+    // Pausa tra le richieste
+    sleep(1);  // Ritardo di 1 secondo
+
+    // Chiamata a ftp_retry per ottenere effettivamente l'elenco dei file
+    $files = ftp_retry(function() use ($ftp_conn, $directory) {
+    return ftp_nlist($ftp_conn, $directory); // Restituisce l'elenco dei file, non solo true/false
+    });
     
     // Ottieni l'elenco dei file e delle directory usando ftp_nlist
-    $files = ftp_nlist($ftp_conn, $directory);
+    //$files = ftp_nlist($ftp_conn, $directory);
 
     if ($files === false) {
         file_put_contents($log_file, "Errore nell'ottenere la lista dei file per $directory\n", FILE_APPEND);
@@ -303,106 +311,30 @@ function scan_directory_ftp($ftp_conn, $directory, $log_file) {
     return $result;
 }
 
-
-
-// Funzione ricorsiva per ottenere la lista dei file
-function safelab_list_files($ftp_conn, $dir, $log_file)
-{
-
-    $files = [];
-    $contents = ftp_nlist($ftp_conn, $dir);
-
-    $filteredContents = array_filter($contents, function ($item) {
-        return !preg_match('/\/\.\.?$/', $item);
-    });
-    return $filteredContents;
-}
-
-function ftp_mlsd_non_recursive($ftp_stream, $directory)
-{
-    $result = [];
-    $stack = [$directory]; // Inizializziamo lo stack con la directory di partenza
-
-    while (!empty($stack)) {
-        $current_dir = array_pop($stack);
-
-        $files = ftp_mlsd($ftp_stream, $current_dir);
-        if ($files === false) {
-            die("Cannot list $current_dir");
+// Funzione di retry per operazioni FTP
+function ftp_retry($callback, $max_attempts = 3, $delay = 1) {
+    $attempt = 0;
+    
+    while ($attempt < $max_attempts) {
+        $attempt++;
+        file_put_contents(SAFELAB_LOG_FILE, "Tentativo $attempt di $max_attempts per operazione FTP...\n", FILE_APPEND);
+        $result = $callback();
+        
+        // Se l'operazione ha avuto successo, restituiamo il risultato
+        if ($result !== false) {
+            return $result;
         }
-
-        foreach ($files as $file) {
-            $name = $file["name"];
-            $filepath = $current_dir . "/" . $name;
-
-            if ($file["type"] == "cdir" || $file["type"] == "pdir") {
-                // Ignora la directory corrente e la directory padre
-                continue;
-            }
-
-            if ($file["type"] == "dir") {
-                // Se è una directory, aggiungila allo stack per la scansione successiva
-                $stack[] = $filepath;
-            } else {
-                // Se è un file, aggiungilo al risultato
-                $result[] = $filepath;
-            }
-        }
+        
+        // Log dell'errore
+        file_put_contents(SAFELAB_LOG_FILE, "Tentativo $attempt fallito.\n", FILE_APPEND);
+        
+        // Pausa tra i tentativi
+        sleep($delay);
     }
-
-    return $result;
-}
-
-function ftp_nlist_non_recursive($ftp_stream, $directory)
-{
-    $result = [];
-    $stack = [$directory];
-
-    while (!empty($stack)) {
-        $current_dir = array_pop($stack);
-
-        $files = ftp_nlist($ftp_stream, $current_dir);
-        if ($files === false) {
-            continue; // Salta se non riesce a elencare i file
-        }
-
-        foreach ($files as $filepath) {
-            // Verifica se è una directory
-            if (ftp_size($ftp_stream, $filepath) == -1) {
-                // È una directory, quindi aggiungila allo stack
-                $stack[] = $filepath;
-            } else {
-                // È un file, aggiungilo al risultato
-                $result[] = $filepath;
-            }
-        }
-    }
-
-    return $result;
-}
-
-function ftp_mlsd_recursive($ftp_stream, $directory)
-{
-    $result = [];
-
-    $files = ftp_mlsd($ftp_stream, $directory);
-    if ($files === false) {
-        die("Cannot list $directory");
-    }
-
-    foreach ($files as $file) {
-        $name = $file["name"];
-        $filepath = $directory . "/" . $name;
-        if (($file["type"] == "cdir") || ($file["type"] == "pdir")) {
-            // noop
-        } else if ($file["type"] == "dir") {
-            $temp = ftp_mlsd_recursive($ftp_stream, $filepath);
-            $result = array_merge($result, $temp);
-        } else {
-            $result[] = $filepath;
-        }
-    }
-    return $result;
+    
+    // Se tutti i tentativi falliscono, logga e ritorna false
+    file_put_contents(SAFELAB_LOG_FILE, "Operazione FTP fallita dopo $max_attempts tentativi.\n", FILE_APPEND);
+    return false;
 }
 
 ?>

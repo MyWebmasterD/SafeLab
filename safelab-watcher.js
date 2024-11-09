@@ -21,7 +21,7 @@ jQuery(document).ready(function($) {
             data: {
                 action: 'safelab_scan_ftp'
             },
-            timeout: 120000, // Imposta il timeout a 2 minuti (120000 millisecondi)
+            timeout: 180000, // Imposta il timeout a 2 minuti (120000 millisecondi)
             success: function(response) {
                 console.log(response); // Debug: Log del risultato della richiesta AJAX
                 if (response.success) {

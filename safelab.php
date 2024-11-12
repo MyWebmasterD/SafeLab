@@ -213,13 +213,15 @@ add_action('wp_ajax_safelab_clear_log', 'safelab_clear_log');
 
 function safelab_scan_ftp()
 {
-
     $log_file = SAFELAB_LOG_FILE;
 
     // Crea il file di log se non esiste
     if (!file_exists($log_file)) {
         file_put_contents($log_file, "Log creato\n"); // Questo creerà il file di log vuoto
     }
+
+    // Pausa iniziale per stabilizzare la connessione
+    sleep(1); // Pausa di 1 secondi
 
     // Connessione FTP
     $ftp_host = get_option('safelab_ftp_host');
@@ -230,7 +232,7 @@ function safelab_scan_ftp()
 
     file_put_contents($log_file, "Connessione FTP in corso a $ftp_host\n", FILE_APPEND);
 
-    $conn_id = ftp_connect($ftp_host, $ftp_port);
+    $conn_id = ftp_connect($ftp_host, $ftp_port, 10); // TEST: Timeout di 10 secondi per limitazioni di enumerazione server
     if (!$conn_id) {
         file_put_contents($log_file, "Errore: impossibile connettersi a $ftp_host\n", FILE_APPEND);
         wp_send_json_error('Errore di connessione FTP');
@@ -239,16 +241,17 @@ function safelab_scan_ftp()
 
     // Modalità passiva (il server lascia che il client stabilisca la connessione e si limita a confermarla)
     ftp_pasv($conn_id, true);
+    file_put_contents($log_file, "Modalità passiva attivata.\n", FILE_APPEND);
 
     file_put_contents($log_file, "Login FTP in corso\n", FILE_APPEND);
     if (!ftp_login($conn_id, $ftp_user, $ftp_pass)) {
-        file_put_contents($log_file, "Errore: login FTP fallito\n", FILE_APPEND);
+        file_put_contents($log_file, "Errore: login FTP fallito per l'utente $ftp_user\n", FILE_APPEND);
         ftp_close($conn_id);
         wp_send_json_error('Errore di login FTP');
         return;
     }
 
-    //file_put_contents($log_file, "Inizio della scansione su " . $directory . "...\n", FILE_APPEND);
+    file_put_contents($log_file, "Login FTP riuscito. Inizio scansione su directory: $directory\n", FILE_APPEND);
 
     // Chiamata alla funzione ricorsiva per scansionare la directory FTP
     $result = scan_directory_ftp($conn_id, $directory, $log_file);
@@ -261,80 +264,79 @@ add_action('wp_ajax_safelab_scan_ftp', 'safelab_scan_ftp');
 
 
 // funzione ricorsiva per ottenere la lista delle directory
-function scan_directory_ftp($ftp_conn, $directory, $log_file) {
+function scan_directory_ftp($ftp_conn, $directory, $log_file, &$scanned = []) {
     $result = [];
+
+    // Evita di ri-esplorare una directory già scansionata
+    if (in_array($directory, $scanned)) {
+        file_put_contents($log_file, "Directory già scansionata: $directory\n", FILE_APPEND);
+        return $result;
+    }
+
+    // Segna la directory come scansionata
+    $scanned[] = $directory;
     
     file_put_contents($log_file, "Esplorando la directory: $directory\n", FILE_APPEND);
 
     // Pausa tra le richieste
-    sleep(1);  // Ritardo di 1 secondo
+    sleep(2);  // Ritardo di 1 secondo
 
-    // Chiamata a ftp_retry per ottenere effettivamente l'elenco dei file
-    $files = ftp_retry(function() use ($ftp_conn, $directory) {
-    return ftp_nlist($ftp_conn, $directory); // Restituisce l'elenco dei file, non solo true/false
-    });
+    //Cambia la directory corrente
+    if (!ftp_chdir($ftp_conn, $directory)) {
+        file_put_contents($log_file, "Errore: impossibile cambiare directory in $directory\n", FILE_APPEND);
+        return $result;
+    }
     
-    // Ottieni l'elenco dei file e delle directory usando ftp_nlist
-    //$files = ftp_nlist($ftp_conn, $directory);
-
+    $files = ftp_rawlist($ftp_conn, $directory);
     if ($files === false) {
         file_put_contents($log_file, "Errore nell'ottenere la lista dei file per $directory\n", FILE_APPEND);
         return $result;
     }
 
-    // Filtra il contenuto per evitare i riferimenti a '.' e '..'
-    $files = array_filter($files, function ($file) {
-        return !preg_match('/\/\.\.?$/', $file);
-    });
+
+    // TODO: creare log per capire perchè filtro non funziona
+    //Filtra il contenuto per evitare i riferimenti a '.' e '..'
+    // $files = array_filter($files, function ($file) {
+    //     return !preg_match('/\/\.\.?$/', $file);
+    // });
+
+
+
+    file_put_contents($log_file, "Lista di file ottenuta per $directory:\n" . print_r($files, true) . "\n", FILE_APPEND);
 
     foreach ($files as $file) {
-        // Rimuoviamo il prefisso della directory principale solo se già presente
-        if (strpos($file, $directory) === 0) {
-            $file = substr($file, strlen($directory));  // Rimuovi la parte iniziale del percorso
-        }
-        
-        $fullPath = rtrim($directory, '/') . '/' . ltrim($file, '/');
 
-        file_put_contents($log_file, "Trovato: $fullPath\n", FILE_APPEND);
+        // if ($file === '.' || $file === '..') {
+        //     continue;
+        // }
+
+        //Analizza la riga restituita da ftp_rawlist
+        $file_info = preg_split("/\s+/", $file, 9); // Divide la riga in sezioni
+        $file_name = $file_info[8]; // Nome del file o della directory
+        $is_directory = $file_info[0][0] === 'd'; // Controlla se è una directory (indicato dalla 'd' iniziale in Unix)
+
+        //Rimuoviamo il prefisso della directory principale solo se già presente
+        // if (strpos($file_name, $directory) === 0) {
+        //     $file_name = substr($file_name, strlen($directory));  // Rimuovi la parte iniziale del percorso
+        // }
         
-        // Controlla se è una directory
-        if (ftp_size($ftp_conn, $fullPath) == -1) {
-            // È una directory, aggiungi alla lista per scansioni successive
+        $fullPath = rtrim($directory, '/') . '/' . ltrim($file_name, '/');
+        file_put_contents($log_file, "Trovato: $fullPath\n", FILE_APPEND);
+
+        if ($is_directory) {
+            // È una directory, effettua la scansione ricorsiva
             file_put_contents($log_file, "Trovata una sottodirectory: $fullPath\n", FILE_APPEND);
-            $result = array_merge($result, scan_directory_ftp($ftp_conn, $fullPath, $log_file));
+            $result = array_merge($result, scan_directory_ftp($ftp_conn, $fullPath, $log_file, $scanned));
         } else {
             // È un file, aggiungilo al risultato
             $result[] = $fullPath;
         }
+
+        // Pausa breve per evitare il sovraccarico del server
+        usleep(100000); // Pausa di 100ms
     }
 
     return $result;
-}
-
-// Funzione di retry per operazioni FTP
-function ftp_retry($callback, $max_attempts = 3, $delay = 1) {
-    $attempt = 0;
-    
-    while ($attempt < $max_attempts) {
-        $attempt++;
-        file_put_contents(SAFELAB_LOG_FILE, "Tentativo $attempt di $max_attempts per operazione FTP...\n", FILE_APPEND);
-        $result = $callback();
-        
-        // Se l'operazione ha avuto successo, restituiamo il risultato
-        if ($result !== false) {
-            return $result;
-        }
-        
-        // Log dell'errore
-        file_put_contents(SAFELAB_LOG_FILE, "Tentativo $attempt fallito.\n", FILE_APPEND);
-        
-        // Pausa tra i tentativi
-        sleep($delay);
-    }
-    
-    // Se tutti i tentativi falliscono, logga e ritorna false
-    file_put_contents(SAFELAB_LOG_FILE, "Operazione FTP fallita dopo $max_attempts tentativi.\n", FILE_APPEND);
-    return false;
 }
 
 ?>

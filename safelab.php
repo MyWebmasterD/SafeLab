@@ -2,19 +2,23 @@
 /*
 Plugin Name: SafeLab Monitor
 Description: Plugin per monitorare file e database di siti WordPress per ragioni di sicurezza.
-Version: 1.0
+Version: 2.0 (SSH Key Edition)
 Author: Ocean Digitals
 */
 
-// Evita accessi diretti
 if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/includes/phpseclib_autoload.php';
+
+use phpseclib3\Crypt\PublicKeyLoader;
+use phpseclib3\Net\SSH2;
+
 /* Enqueue Script */
 function safelab_enqueue_scripts($hook)
 {
-    if ($hook !== 'safelab_page_safelab_ftp' && $hook !== 'safelab_page_safelab_settings')
+    if ($hook !== 'safelab_page_safelab_ssh' && $hook !== 'safelab_page_safelab_settings')
         return;
     wp_enqueue_script('safelab-watcher', plugin_dir_url(__FILE__) . 'safelab-watcher.js', ['jquery'], null, true);
 }
@@ -35,11 +39,11 @@ function safelab_add_admin_menu()
 
     add_submenu_page(
         'safelab_main',
-        'FTP Watcher',
-        'FTP Watcher',
+        'SSH Watcher',
+        'SSH Watcher',
         'manage_options',
-        'safelab_ftp',
-        'safelab_ftp_page'
+        'safelab_ssh',
+        'safelab_ssh_page'
     );
 
     add_submenu_page(
@@ -59,17 +63,15 @@ function safelab_main_page()
     echo '<div class="wrap"><h1>SafeLab Monitor</h1><p>Benvenuto nel pannello di controllo di SafeLab. Usa il menu per navigare.</p></div>';
 }
 
-/*  Pagina FTP Watcher
-    HTML con pulsanti di chiamata routine
- */
-function safelab_ftp_page()
+/* Pagina SSH Watcher */
+function safelab_ssh_page()
 {
     ?>
     <div class="wrap">
-        <h1>FTP Watcher</h1>
+        <h1>SSH Watcher</h1>
         <button id="start-scan" class="button button-primary">Avvia Scansione</button>
         <button id="stop-scan" class="button button-secondary" disabled>Ferma Scansione</button>
-        <p id="scan-status"></p> <!-- Aggiungi questo paragrafo per i messaggi di stato -->
+        <p id="scan-status"></p>
         <h2>Modifiche Rilevate</h2>
         <table id="changes-table" class="wp-list-table widefat fixed striped">
             <thead>
@@ -85,258 +87,95 @@ function safelab_ftp_page()
             </tbody>
         </table>
     </div>
-
     <?php
 }
 
-/*  Pagina di Settings 
-    Definisce connessione e test ftp
-    Visualizzazione File di Log
-*/
+/* Pagina di Settings */
 function safelab_settings_page()
 {
-    // Salva le impostazioni se il form è stato inviato
     if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['safelab_save_settings'])) {
-        $ftp_host = sanitize_text_field($_POST['ftp_host']);
-        $ftp_user = sanitize_text_field($_POST['ftp_user']);
-        $ftp_pass = sanitize_text_field($_POST['ftp_pass']);
-        $ftp_port = sanitize_text_field($_POST['ftp_port']);
+        $ssh_host = sanitize_text_field($_POST['ssh_host']);
+        $ssh_user = sanitize_text_field($_POST['ssh_user']);
+        $private_key = sanitize_textarea_field($_POST['private_key']);
         $scan_directory = sanitize_text_field($_POST['scan_directory']);
-        //$scan_interval = isset($_POST['scan_interval']) ? absint($_POST['scan_interval']) : 5;
 
-        // Salva i dati nel database
-        update_option('safelab_ftp_host', $ftp_host);
-        update_option('safelab_ftp_user', $ftp_user);
-        update_option('safelab_ftp_pass', $ftp_pass);
-        update_option('safelab_ftp_port', $ftp_port);
+        update_option('safelab_ssh_host', $ssh_host);
+        update_option('safelab_ssh_user', $ssh_user);
+        update_option('safelab_private_key', $private_key);
         update_option('scan_directory', $scan_directory);
-        //update_option('safelab_scan_interval', $scan_interval);
 
-        // Test della connessione FTP
-        $conn_id = ftp_connect($ftp_host, $ftp_port);
-        if ($conn_id && ftp_login($conn_id, $ftp_user, $ftp_pass)) {
-            echo '<div class="notice notice-success is-dismissible"><p>Connessione FTP riuscita.</p></div>';
-            ftp_close($conn_id);
+        // Test connessione SSH
+        $ssh = new SSH2($ssh_host);
+        $key = PublicKeyLoader::load($private_key);
+
+        if ($ssh->login($ssh_user, $key)) {
+            echo '<div class="notice notice-success is-dismissible"><p>Connessione SSH riuscita.</p></div>';
         } else {
-            echo '<div class="notice notice-error is-dismissible"><p>Connessione FTP fallita. Verifica le credenziali.</p></div>';
+            echo '<div class="notice notice-error is-dismissible"><p>Connessione SSH fallita. Verifica le credenziali.</p></div>';
         }
     }
 
-    // Leggi le impostazioni attuali
-    $ftp_host = get_option('safelab_ftp_host', '');
-    $ftp_user = get_option('safelab_ftp_user', '');
-    $ftp_pass = get_option('safelab_ftp_pass', '');
-    $ftp_port = get_option('safelab_ftp_port', '21'); // Porta di default 21
+    $ssh_host = get_option('safelab_ssh_host', '');
+    $ssh_user = get_option('safelab_ssh_user', '');
+    $private_key = get_option('safelab_private_key', '');
     $scan_directory = get_option('scan_directory', '');
-    //$scan_interval = get_option('safelab_scan_interval', 5); // Default a 5 minuti
 
-    // Leggi il contenuto del file di log
-    $log_content = file_exists(SAFELAB_LOG_FILE) ? file_get_contents(SAFELAB_LOG_FILE) : 'Il file di log è vuoto.';
-
-    // Form HTML per le impostazioni
     ?>
     <div class="wrap">
         <h1>Impostazioni di SafeLab</h1>
         <form method="POST">
             <table class="form-table">
                 <tr>
-                    <th scope="row"><label for="ftp_host">FTP Host</label></th>
-                    <td><input name="ftp_host" type="text" id="ftp_host" value="<?php echo esc_attr($ftp_host); ?>"
-                            class="regular-text"></td>
+                    <th scope="row"><label for="ssh_host">SSH Host</label></th>
+                    <td><input name="ssh_host" type="text" id="ssh_host" value="<?php echo esc_attr($ssh_host); ?>" class="regular-text"></td>
                 </tr>
                 <tr>
-                    <th scope="row"><label for="ftp_user">FTP Username</label></th>
-                    <td><input name="ftp_user" type="text" id="ftp_user" value="<?php echo esc_attr($ftp_user); ?>"
-                            class="regular-text"></td>
+                    <th scope="row"><label for="ssh_user">SSH Username</label></th>
+                    <td><input name="ssh_user" type="text" id="ssh_user" value="<?php echo esc_attr($ssh_user); ?>" class="regular-text"></td>
                 </tr>
                 <tr>
-                    <th scope="row"><label for="ftp_pass">FTP Password</label></th>
-                    <td><input name="ftp_pass" type="password" id="ftp_pass" value="<?php echo esc_attr($ftp_pass); ?>"
-                            class="regular-text"></td>
-                </tr>
-                <tr>
-                    <th scope="row"><label for="ftp_port">FTP Port</label></th>
-                    <td><input name="ftp_port" type="number" id="ftp_port" value="<?php echo esc_attr($ftp_port); ?>"
-                            class="small-text"></td>
-                </tr>
-                <tr valign="top">
-                    <th scope="row">Percorso Directory Iniziale</th>
+                    <th scope="row"><label for="private_key">Chiave Privata</label></th>
                     <td>
-                        <input type="text" name="scan_directory" value="<?php echo esc_attr(get_option('scan_directory', '/')); ?>" />
-                        <p class="description">Inserisci la directory di partenza per la scansione (default: directory di root).</p>
+                        <textarea name="private_key" id="private_key" rows="10" cols="50" class="large-text"><?php echo esc_textarea($private_key); ?></textarea>
                     </td>
                 </tr>
+                <tr>
+                    <th scope="row"><label for="scan_directory">Directory di Scansione</label></th>
+                    <td><input name="scan_directory" type="text" id="scan_directory" value="<?php echo esc_attr($scan_directory); ?>" class="regular-text"></td>
+                </tr>
             </table>
-            <p class="submit"><button type="submit" name="safelab_save_settings" class="button button-primary">Salva
-                    Impostazioni</button></p>
+            <p class="submit"><button type="submit" name="safelab_save_settings" class="button button-primary">Salva Impostazioni</button></p>
         </form>
-
-        <h2>File di Log</h2>
-        <textarea readonly rows="10" class="large-text"><?php echo esc_textarea($log_content); ?></textarea>
     </div>
-    <button id="safelab-clear-log" class="button button-secondary">Cancella Log</button>
-    <div id="safelab-clear-log-status"></div>
-
     <?php
-
 }
 
-
-// Definisci il percorso del file di log
-define('SAFELAB_LOG_FILE', plugin_dir_path(__FILE__) . 'safelab_log.txt');
-
-// Crea il file di log se non esiste
-function safelab_create_log_file()
+/* Scansione SSH */
+function safelab_scan_ssh()
 {
-    if (!file_exists(SAFELAB_LOG_FILE)) {
-        file_put_contents(SAFELAB_LOG_FILE, "Log di SafeLab Monitor\n");
-    }
-}
-register_activation_hook(__FILE__, 'safelab_create_log_file');
+    $ssh_host = get_option('safelab_ssh_host');
+    $ssh_user = get_option('safelab_ssh_user');
+    $private_key = get_option('safelab_private_key');
+    $scan_directory = get_option('scan_directory', '/');
 
-// Funzione per cancellare il file di log
-function safelab_clear_log()
-{
-    $log_file = SAFELAB_LOG_FILE;
+    $ssh = new SSH2($ssh_host);
+    $key = PublicKeyLoader::load($private_key);
 
-    if (file_exists($log_file)) {
-        file_put_contents($log_file, "");  // Cancella il contenuto del file di log
-        wp_send_json_success("Log cancellato con successo.");
-    } else {
-        wp_send_json_error("Il file di log non esiste.");
-    }
-}
-
-// Aggiungi l'azione Ajax per gli utenti autenticati
-add_action('wp_ajax_safelab_clear_log', 'safelab_clear_log');
-
-
-function safelab_scan_ftp()
-{
-    $log_file = SAFELAB_LOG_FILE;
-
-    // Crea il file di log se non esiste
-    if (!file_exists($log_file)) {
-        file_put_contents($log_file, "Log creato\n"); // Questo creerà il file di log vuoto
-    }
-
-    // Pausa iniziale per stabilizzare la connessione
-    sleep(1); // Pausa di 1 secondi
-
-    // Connessione FTP
-    $ftp_host = get_option('safelab_ftp_host');
-    $ftp_user = get_option('safelab_ftp_user');
-    $ftp_pass = get_option('safelab_ftp_pass');
-    $ftp_port = get_option('safelab_ftp_port', 21);
-    $directory = get_option('scan_directory', '');
-
-    file_put_contents($log_file, "Connessione FTP in corso a $ftp_host\n", FILE_APPEND);
-
-    $conn_id = ftp_connect($ftp_host, $ftp_port, 10); // TEST: Timeout di 10 secondi per limitazioni di enumerazione server
-    if (!$conn_id) {
-        file_put_contents($log_file, "Errore: impossibile connettersi a $ftp_host\n", FILE_APPEND);
-        wp_send_json_error('Errore di connessione FTP');
+    if (!$ssh->login($ssh_user, $key)) {
+        wp_send_json_error('Errore di login SSH');
         return;
     }
 
-    // Modalità passiva (il server lascia che il client stabilisca la connessione e si limita a confermarla)
-    ftp_pasv($conn_id, true);
-    file_put_contents($log_file, "Modalità passiva attivata.\n", FILE_APPEND);
+    // Comando per elencare i file in modo ricorsivo
+    $command = "find " . escapeshellarg($scan_directory) . " -type f";
+    $file_list = $ssh->exec($command);
 
-    file_put_contents($log_file, "Login FTP in corso\n", FILE_APPEND);
-    if (!ftp_login($conn_id, $ftp_user, $ftp_pass)) {
-        file_put_contents($log_file, "Errore: login FTP fallito per l'utente $ftp_user\n", FILE_APPEND);
-        ftp_close($conn_id);
-        wp_send_json_error('Errore di login FTP');
+    if ($file_list === false) {
+        wp_send_json_error('Errore durante la scansione SSH');
         return;
     }
 
-    file_put_contents($log_file, "Login FTP riuscito. Inizio scansione su directory: $directory\n", FILE_APPEND);
-
-    // Chiamata alla funzione ricorsiva per scansionare la directory FTP
-    $result = scan_directory_ftp($conn_id, $directory, $log_file);
-
-    ftp_close($conn_id);
-    file_put_contents($log_file, "Scansione completata\n", FILE_APPEND);
-    wp_send_json_success($result);
+    $files = explode("\n", trim($file_list));
+    wp_send_json_success($files);
 }
-add_action('wp_ajax_safelab_scan_ftp', 'safelab_scan_ftp');
-
-
-// funzione ricorsiva per ottenere la lista delle directory
-function scan_directory_ftp($ftp_conn, $directory, $log_file, &$scanned = []) {
-    $result = [];
-
-    // Evita di ri-esplorare una directory già scansionata
-    if (in_array($directory, $scanned)) {
-        file_put_contents($log_file, "Directory già scansionata: $directory\n", FILE_APPEND);
-        return $result;
-    }
-
-    // Segna la directory come scansionata
-    $scanned[] = $directory;
-    
-    file_put_contents($log_file, "Esplorando la directory: $directory\n", FILE_APPEND);
-
-    // Pausa tra le richieste
-    sleep(2);  // Ritardo di 1 secondo
-
-    //Cambia la directory corrente
-    if (!ftp_chdir($ftp_conn, $directory)) {
-        file_put_contents($log_file, "Errore: impossibile cambiare directory in $directory\n", FILE_APPEND);
-        return $result;
-    }
-    
-    $files = ftp_rawlist($ftp_conn, $directory);
-    if ($files === false) {
-        file_put_contents($log_file, "Errore nell'ottenere la lista dei file per $directory\n", FILE_APPEND);
-        return $result;
-    }
-
-
-    // TODO: creare log per capire perchè filtro non funziona
-    //Filtra il contenuto per evitare i riferimenti a '.' e '..'
-    // $files = array_filter($files, function ($file) {
-    //     return !preg_match('/\/\.\.?$/', $file);
-    // });
-
-
-
-    file_put_contents($log_file, "Lista di file ottenuta per $directory:\n" . print_r($files, true) . "\n", FILE_APPEND);
-
-    foreach ($files as $file) {
-
-        // if ($file === '.' || $file === '..') {
-        //     continue;
-        // }
-
-        //Analizza la riga restituita da ftp_rawlist
-        $file_info = preg_split("/\s+/", $file, 9); // Divide la riga in sezioni
-        $file_name = $file_info[8]; // Nome del file o della directory
-        $is_directory = $file_info[0][0] === 'd'; // Controlla se è una directory (indicato dalla 'd' iniziale in Unix)
-
-        //Rimuoviamo il prefisso della directory principale solo se già presente
-        // if (strpos($file_name, $directory) === 0) {
-        //     $file_name = substr($file_name, strlen($directory));  // Rimuovi la parte iniziale del percorso
-        // }
-        
-        $fullPath = rtrim($directory, '/') . '/' . ltrim($file_name, '/');
-        file_put_contents($log_file, "Trovato: $fullPath\n", FILE_APPEND);
-
-        if ($is_directory) {
-            // È una directory, effettua la scansione ricorsiva
-            file_put_contents($log_file, "Trovata una sottodirectory: $fullPath\n", FILE_APPEND);
-            $result = array_merge($result, scan_directory_ftp($ftp_conn, $fullPath, $log_file, $scanned));
-        } else {
-            // È un file, aggiungilo al risultato
-            $result[] = $fullPath;
-        }
-
-        // Pausa breve per evitare il sovraccarico del server
-        usleep(100000); // Pausa di 100ms
-    }
-
-    return $result;
-}
-
-?>
+add_action('wp_ajax_safelab_scan_ssh', 'safelab_scan_ssh');
